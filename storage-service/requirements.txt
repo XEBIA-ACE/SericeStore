@@ -1,0 +1,33 @@
+# =============================================================================
+# SericeStore — Python dependencies
+# =============================================================================
+
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.18   # multipart/form-data upload support
+
+# Configuration & validation
+pydantic==2.10.3
+pydantic-settings==2.7.0
+
+# Structured logging
+structlog==24.4.0
+
+# Storage backends
+aioboto3==13.2.0            # async AWS S3
+google-cloud-storage==2.19.0  # GCS
+miniopy-async==1.20.0       # async MinIO
+
+# Image processing (ImageMagick binding)
+Wand==0.6.13
+
+# Video processing
+ffmpeg-python==0.2.0
+
+# HTTP client (used internally by some SDKs)
+httpx==0.28.1
+aiofiles==24.1.0
+
+# Development / testing (install with: pip install -r requirements-dev.txt)
+# Listed here for reference; see requirements-dev.txt for pinned versions.
