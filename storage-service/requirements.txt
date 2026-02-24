@@ -1,0 +1,30 @@
+# ── Web Framework ─────────────────────────────────────────────────────────────
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.12     # required for UploadFile support
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+structlog==24.4.0
+
+# ── Amazon S3 ─────────────────────────────────────────────────────────────────
+aiobotocore==2.15.2
+boto3==1.35.76              # keep in sync with aiobotocore compatibility matrix
+botocore==1.35.76
+
+# ── Google Cloud Storage ──────────────────────────────────────────────────────
+google-cloud-storage==2.19.0
+google-auth==2.36.0
+
+# ── MinIO ─────────────────────────────────────────────────────────────────────
+miniopy-async==1.21.0
+
+# ── HTTP client (shared) ──────────────────────────────────────────────────────
+aiohttp==3.11.10
+httpx==0.28.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-magic==0.4.27        # reliable MIME-type detection

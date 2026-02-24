@@ -1,67 +1,75 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 1: deps — install production + dev dependencies
+# Multi-stage Dockerfile for the Storage Service
+#
+# Stage 1 (builder): install Python dependencies in an isolated layer
+# Stage 2 (runtime): lean final image with system tools (ImageMagick, FFmpeg)
 # ─────────────────────────────────────────────────────────────────────────────
-FROM node:20-alpine AS deps
 
-WORKDIR /app
+# ── Stage 1: dependency builder ───────────────────────────────────────────────
+FROM python:3.12-slim AS builder
 
-COPY package.json package-lock.json* ./
+WORKDIR /build
 
-# Install ALL deps (dev needed for TypeScript compilation)
-RUN npm ci --ignore-scripts
+# Install build tools needed for native extensions
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        libmagic1 \
+    && rm -rf /var/lib/apt/lists/*
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 2: builder — compile TypeScript
-# ─────────────────────────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+COPY requirements.txt .
 
-WORKDIR /app
+RUN pip install --upgrade pip \
+ && pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
 
-RUN npm run build
+# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+FROM python:3.12-slim AS runtime
 
-# Prune dev dependencies from node_modules
-RUN npm prune --production
+# Install system-level media tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        # ImageMagick
+        imagemagick \
+        # FFmpeg + FFprobe
+        ffmpeg \
+        # MIME-type detection support for python-magic
+        libmagic1 \
+        # Timezone data
+        tzdata \
+        # curl for healthcheck
+        curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 3: runtime — lean production image with system dependencies
-# ─────────────────────────────────────────────────────────────────────────────
-FROM node:20-alpine AS runtime
+# Allow ImageMagick to process all file types (relax default security policy
+# for trusted internal workloads; tighten for public-facing deployments)
+RUN sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' \
+    /etc/ImageMagick-6/policy.xml 2>/dev/null || true
 
-# Install runtime system dependencies:
-#  - imagemagick : image processing
-#  - ffmpeg      : video processing
-#  - tini        : proper PID 1 / signal handling
-RUN apk add --no-cache \
-    imagemagick \
-    ffmpeg \
-    tini \
-    && rm -rf /var/cache/apk/*
-
-WORKDIR /app
+# Copy installed Python packages from builder
+COPY --from=builder /install /usr/local
 
 # Non-root user for security
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN groupadd --gid 1001 appgroup \
+ && useradd  --uid 1001 --gid appgroup --shell /bin/bash --create-home appuser
 
-COPY --from=builder --chown=appuser:appgroup /app/dist ./dist
-COPY --from=builder --chown=appuser:appgroup /app/node_modules ./node_modules
-COPY --from=builder --chown=appuser:appgroup /app/package.json ./
+WORKDIR /app
 
-# Ensure log directory is writable
-RUN mkdir -p logs && chown appuser:appgroup logs
+# Copy application source
+COPY src/ src/
+
+# Ensure Python finds the src package
+ENV PYTHONPATH=/app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
 USER appuser
 
-EXPOSE 3000
+EXPOSE 8000
 
-# Use tini as the init system to properly handle signals
-ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node", "dist/index.js"]
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Health check (Docker-native; Kubernetes uses /health/ready endpoint)
-# ─────────────────────────────────────────────────────────────────────────────
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-  CMD wget -qO- http://localhost:3000/health/live || exit 1
+    CMD curl -f http://localhost:8000/api/v1/health || exit 1
+
+CMD ["python", "-m", "uvicorn", "src.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "2", \
+     "--log-config", "/dev/null"]

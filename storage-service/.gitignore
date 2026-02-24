@@ -1,50 +1,57 @@
-# Dependencies
-node_modules/
-.pnp
-.pnp.js
-
-# Build output
-dist/
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
 build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+MANIFEST
 
-# Environment variables
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.env/
+
+# ── Secrets / config ──────────────────────────────────────────────────────────
 .env
-.env.local
-.env.*.local
+*.pem
+*.key
+service-account*.json
+credentials*.json
 
-# Logs
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# ── Testing ───────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
 
-# Runtime data
-pids/
-*.pid
-*.seed
+# ── Type checking ─────────────────────────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
 
-# Test coverage
-coverage/
-.nyc_output/
-
-# Editor & OS
-.DS_Store
-Thumbs.db
+# ── Editors ───────────────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
+*.sublime-workspace
 
-# TypeScript
-*.tsbuildinfo
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
 
-# Temporary upload files
-uploads/
+# ── Docker ────────────────────────────────────────────────────────────────────
+docker-compose.override.yml
+
+# ── Temp / uploads ────────────────────────────────────────────────────────────
 tmp/
-
-# GCS service account key
-config/gcs-key.json
-
-# Docker volumes (local)
-.docker-data/
+temp/
+uploads/
