@@ -1,0 +1,116 @@
+version: '3.9'
+
+# =============================================================================
+# Storage Service — Local development docker-compose
+#
+# Services:
+#   storage-service  — the Node.js API
+#   minio            — S3-compatible object storage
+#   minio-init       — one-shot bucket creation
+#   prometheus       — metrics scraping (optional)
+# =============================================================================
+
+services:
+
+  # ── Application ─────────────────────────────────────────────────────────────
+  storage-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: storage-service
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      API_SECRET_KEY: ${API_SECRET_KEY:-dev-secret-change-me}
+      STORAGE_PROVIDER: minio
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_USE_SSL: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-storage-service}
+      TEMP_DIR: /tmp/storage-service
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+      RATE_LIMIT_MAX: 1000
+      MAX_FILE_SIZE: 524288000
+    volumes:
+      - /tmp/storage-service:/tmp/storage-service
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    networks:
+      - storage-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── MinIO ────────────────────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - storage-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── MinIO init (creates the default bucket) ───────────────────────────────
+  minio-init:
+    image: minio/mc:latest
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-minioadmin} ${MINIO_SECRET_KEY:-minioadmin} &&
+        mc mb --ignore-existing local/${MINIO_BUCKET:-storage-service} &&
+        echo 'Bucket ready.'
+      "
+    networks:
+      - storage-net
+
+  # ── Prometheus (optional metrics) ─────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - storage-net
+    profiles:
+      - monitoring
+
+# ── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  minio-data:
+  prometheus-data:
+
+# ── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  storage-net:
+    driver: bridge
