@@ -1,359 +1,423 @@
-# SericeStore
+# SericeStore — Storage Service
 
-A production-ready **Storage & Media Processing Service** built with FastAPI, supporting **Amazon S3**, **Google Cloud Storage**, **MinIO**, **ImageMagick**, and **FFmpeg**.
-
----
-
-## Table of Contents
-
-- [Architecture](#architecture)
-- [Features](#features)
-- [Quick Start](#quick-start)
-- [Configuration](#configuration)
-- [API Reference](#api-reference)
-- [Development](#development)
-- [Testing](#testing)
-- [Docker](#docker)
-- [Project Structure](#project-structure)
-
----
-
-## Architecture
-
-SericeStore follows **Clean Architecture** with strict layer separation:
-
-```
-┌───────────────────────────────────────────────────────┐
-│                     API Layer                         │
-│  FastAPI routes · Pydantic schemas · Middleware       │
-├───────────────────────────────────────────────────────┤
-│                  Service Layer                        │
-│  FileService · MediaService  (business logic)        │
-├───────────────────────────────────────────────────────┤
-│                  Domain Layer                         │
-│  StoredFile · ProcessingJob · StorageRepository (ABC)│
-├───────────────────────────────────────────────────────┤
-│               Infrastructure Layer                    │
-│  S3Storage · GCSStorage · MinIOStorage               │
-│  ImageProcessor (Wand/ImageMagick)                   │
-│  VideoProcessor (FFmpeg)                              │
-└───────────────────────────────────────────────────────┘
-```
-
-The storage backend is selected at runtime via the `STORAGE_BACKEND` environment variable. Switching from MinIO (local dev) to S3 (production) requires only a config change — no code changes.
+A production-ready, multi-cloud file storage service with image and video processing pipelines, built with Node.js and TypeScript.
 
 ---
 
 ## Features
 
-| Category | Capability |
+| Feature | Details |
 |---|---|
-| **Storage** | Upload, download, stream, delete, list with prefix/pagination |
-| **Presigned URLs** | Client-side upload & download without routing through the API |
-| **Image Processing** | Resize, thumbnail, crop, rotate, flip, grayscale, watermark, format convert, EXIF extraction |
-| **Video Processing** | Transcode, frame extraction, audio extraction, animated GIF creation, FFprobe metadata |
-| **Observability** | Structured JSON logging (structlog), `/health`, `/health/ready`, `/metrics` |
-| **Security** | Bearer token auth (pluggable), input validation, object key sanitization, size limits |
-| **Multi-environment** | dev / staging / production via env vars |
+| **Multi-cloud storage** | Amazon S3, Google Cloud Storage, MinIO (switch via env var) |
+| **Image processing** | Resize, thumbnail generation, format conversion, EXIF stripping via ImageMagick |
+| **Video processing** | Thumbnail extraction, MP4 transcoding, metadata probing via FFmpeg |
+| **REST API** | Express with OpenAPI/Swagger docs at `/api/docs` |
+| **Auth** | JWT Bearer token middleware (pluggable identity provider) |
+| **Observability** | Structured Winston logging, Prometheus metrics at `/metrics`, health probes |
+| **Rate limiting** | Configurable via env vars |
+| **Docker** | Multi-stage Dockerfile; docker-compose with MinIO, Prometheus, Grafana |
+| **Tests** | Jest unit + supertest integration tests |
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│                  HTTP Clients               │
+└───────────────────┬─────────────────────────┘
+                    │
+         ┌──────────▼──────────┐
+         │   Express App       │  src/app.ts
+         │  (helmet, cors,     │
+         │   rate-limit, jwt)  │
+         └──────────┬──────────┘
+                    │
+    ┌───────────────▼──────────────────┐
+    │        API Layer                 │  src/api/
+    │  routes/ controllers/ middleware/ │
+    └───────────────┬──────────────────┘
+                    │
+    ┌───────────────▼──────────────────┐
+    │      FileService                 │  src/services/file.service.ts
+    │  (orchestrates all pipelines)    │
+    └──────┬────────────┬──────────────┘
+           │            │
+  ┌────────▼──┐   ┌─────▼──────────────────┐
+  │ Storage   │   │  Processing            │
+  │ Provider  │   │  ImageProcessor (gm)   │
+  │ (S3/GCS/  │   │  VideoProcessor (ffmpeg│
+  │  MinIO)   │   └────────────────────────┘
+  └───────────┘
+```
+
+### Directory Structure
+
+```
+storage-service/
+├── src/
+│   ├── api/
+│   │   ├── controllers/          # HTTP handlers (thin adapters)
+│   │   │   ├── files.controller.ts
+│   │   │   └── health.controller.ts
+│   │   ├── middleware/           # auth, error, upload, request-id
+│   │   ├── routes/               # Express routers
+│   │   └── swagger.ts            # OpenAPI spec generator
+│   ├── config/                   # Centralised env-var configuration
+│   ├── core/
+│   │   ├── interfaces/           # IStorageProvider, IImageProcessor, IVideoProcessor
+│   │   └── types/                # Domain types (FileMetadata, ApiResponse, etc.)
+│   ├── services/
+│   │   ├── file.service.ts       # Business-logic orchestrator
+│   │   ├── storage/              # S3, GCS, MinIO providers + factory
+│   │   └── processing/           # ImageProcessor, VideoProcessor
+│   └── utils/                    # Logger, validators, domain errors
+├── tests/
+│   ├── unit/                     # Jest unit tests (no I/O)
+│   └── integration/              # Supertest HTTP tests (providers mocked)
+├── docker/
+│   └── prometheus.yml
+├── Dockerfile                    # Multi-stage build
+├── docker-compose.yml            # Local dev stack
+└── .env.example
+```
 
 ---
 
 ## Quick Start
 
-### Local development with Docker Compose
+### Prerequisites
+
+- **Node.js** >= 20
+- **Docker** + **Docker Compose** (for local stack)
+- **ImageMagick** (`convert`) — required if `ENABLE_IMAGE_PROCESSING=true`
+- **FFmpeg** — required if `ENABLE_VIDEO_PROCESSING=true`
+
+### 1 — Clone and install
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/your-org/sericestore.git
-cd sericestore
-
-# 2. Start MinIO + the API
-docker compose -f docker/docker-compose.yml up --build
-
-# 3. API is available at http://localhost:8000
-#    MinIO console at  http://localhost:9001  (user: minioadmin / minioadmin)
-#    Swagger UI at     http://localhost:8000/docs
+git clone <repo-url>
+cd storage-service
+npm install
 ```
 
-### Local development without Docker
+### 2 — Configure environment
 
 ```bash
-# Prerequisites: Python 3.12+, ImageMagick, FFmpeg
-
-# 1. Install dependencies
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt
-
-# 2. Configure environment
 cp .env.example .env
-# Edit .env: set STORAGE_BACKEND=minio and point MINIO_* vars at a running MinIO
+# Edit .env with your settings
+```
 
-# 3. Run the server
-python main.py
+### 3a — Local stack with Docker Compose (recommended)
+
+Starts the API, MinIO, Prometheus, and Grafana in one command:
+
+```bash
+docker-compose up --build
+```
+
+| Service | URL |
+|---|---|
+| Storage Service API | http://localhost:3000 |
+| Swagger UI | http://localhost:3000/api/docs |
+| MinIO Console | http://localhost:9001 (minioadmin / minioadmin) |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3001 (admin / admin) |
+
+### 3b — Run locally (development mode)
+
+```bash
+# Ensure MinIO or another provider is running and configured in .env
+npm run dev
+```
+
+### Build for production
+
+```bash
+npm run build
+npm start
 ```
 
 ---
 
-## Configuration
+## Environment Variables
 
-All configuration is via environment variables (see `.env.example` for the full list).
+See [`.env.example`](.env.example) for the full list with descriptions.
+
+Key variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `STORAGE_BACKEND` | `s3` | Active backend: `s3` \| `gcs` \| `minio` |
-| `AWS_S3_BUCKET` | — | S3 bucket name |
-| `AWS_REGION` | `us-east-1` | AWS region |
-| `GCS_PROJECT_ID` | — | GCP project ID |
-| `GCS_BUCKET` | — | GCS bucket name |
-| `MINIO_ENDPOINT` | `localhost:9000` | MinIO host:port |
-| `MINIO_BUCKET` | `sericestore` | MinIO bucket |
-| `MAX_UPLOAD_SIZE_MB` | `500` | Per-file upload limit |
-| `THUMBNAIL_WIDTH` | `300` | Default thumbnail width (px) |
-| `THUMBNAIL_HEIGHT` | `300` | Default thumbnail height (px) |
-| `IMAGE_QUALITY_DEFAULT` | `85` | JPEG/WebP output quality |
-| `VIDEO_CRF_DEFAULT` | `23` | FFmpeg CRF (lower = better quality) |
-| `AUTH_ENABLED` | `false` | Enable Bearer token auth |
-| `AUTH_SECRET_KEY` | — | Token secret (required if auth enabled) |
-| `LOG_LEVEL` | `INFO` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` |
-| `ENVIRONMENT` | `development` | `development` \| `staging` \| `production` |
+| `STORAGE_PROVIDER` | `minio` | Active backend: `s3`, `gcs`, or `minio` |
+| `AUTH_ENABLED` | `true` | Set to `false` to skip JWT validation (dev only) |
+| `JWT_SECRET` | — | Secret for JWT signing; **required in production** |
+| `MAX_FILE_SIZE_MB` | `100` | Maximum upload size in MB |
+| `ENABLE_IMAGE_PROCESSING` | `true` | Toggle ImageMagick pipeline |
+| `ENABLE_VIDEO_PROCESSING` | `true` | Toggle FFmpeg pipeline |
 
 ---
 
 ## API Reference
 
-Interactive documentation is available at `/docs` (Swagger) and `/redoc`.
+Interactive documentation is available at `/api/docs` when the service is running.
 
-### Health
+### Base URL
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Liveness probe |
-| `GET` | `/health/ready` | Readiness probe (checks storage backend) |
-| `GET` | `/metrics` | Basic application metrics |
-
-### Files  `prefix: /api/v1`
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/files/upload` | Upload a file (multipart/form-data) |
-| `POST` | `/files/upload-url` | Generate a presigned upload URL |
-| `GET` | `/files` | List files (supports `prefix`, `max_keys`, `continuation_token`) |
-| `GET` | `/files/{key}` | Download a file |
-| `HEAD` | `/files/{key}` | Get file metadata |
-| `GET` | `/files/{key}/url` | Generate a presigned download URL |
-| `DELETE` | `/files/{key}` | Delete a file |
-
-#### Upload example
-
-```bash
-curl -X POST http://localhost:8000/api/v1/files/upload \
-  -F "file=@photo.jpg;type=image/jpeg" \
-  -F "prefix=avatars"
+```
+http://localhost:3000/api/v1
 ```
 
-#### Response
+### Authentication
 
-```json
-{
-  "id": "3f9a7b20-...",
-  "key": "avatars/3f9a7b20-.../photo.jpg",
-  "bucket": "sericestore",
-  "backend": "minio",
-  "content_type": "image/jpeg",
-  "size_bytes": 204800,
-  "original_filename": "photo.jpg",
-  "etag": "abc123",
-  "created_at": "2026-02-24T10:00:00Z",
-  "metadata": {}
-}
+Include a Bearer JWT in every request (unless `AUTH_ENABLED=false`):
+
 ```
-
-### Media Processing  `prefix: /api/v1`
-
-#### Images
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/media/images/resize` | Resize an image |
-| `POST` | `/media/images/thumbnail` | Create a thumbnail |
-| `POST` | `/media/images/convert` | Convert image format |
-| `POST` | `/media/images/crop` | Crop an image |
-| `POST` | `/media/images/watermark` | Apply watermark |
-| `GET` | `/media/images/{key}/metadata` | Extract image metadata (EXIF, dimensions…) |
-
-#### Image resize example
-
-```bash
-curl -X POST http://localhost:8000/api/v1/media/images/resize \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_key": "avatars/uuid/photo.jpg",
-    "width": 800,
-    "height": 600,
-    "maintain_aspect": true,
-    "output_format": "webp",
-    "quality": 80
-  }'
-```
-
-#### Videos
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/media/videos/transcode` | Transcode to a different codec/format |
-| `POST` | `/media/videos/frame` | Extract a frame as JPEG |
-| `POST` | `/media/videos/audio` | Extract the audio track |
-| `POST` | `/media/videos/gif` | Create an animated GIF from a segment |
-| `GET` | `/media/videos/{key}/metadata` | Extract video metadata (FFprobe) |
-
-#### Transcode example
-
-```bash
-curl -X POST http://localhost:8000/api/v1/media/videos/transcode \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_key": "videos/uuid/clip.mov",
-    "output_format": "mp4",
-    "video_codec": "libx264",
-    "audio_codec": "aac",
-    "crf": 23,
-    "preset": "fast",
-    "width": 1280
-  }'
+Authorization: Bearer <token>
 ```
 
 ---
 
-## Development
+### Endpoints
 
-### Code style
+#### Upload a File
 
-```bash
-# Lint & format
-ruff check .
-ruff format .
-
-# Type checking
-mypy src/
+```
+POST /api/v1/files
+Content-Type: multipart/form-data
 ```
 
-### Adding a new storage backend
+**Form fields:**
 
-1. Create `src/infrastructure/storage/my_backend.py` implementing `StorageRepository`.
-2. Add a new value to `StorageBackend` in `src/core/config.py`.
-3. Register it in `src/infrastructure/storage/__init__.py`'s factory.
-4. Add the relevant env vars to `.env.example`.
+| Field | Type | Description |
+|---|---|---|
+| `file` | binary | The file to upload (required) |
+| `processMedia` | boolean | Run image/video processing (default: `true`) |
+| `tags` | string | JSON-encoded `{"key": "value"}` tags |
+
+**Response `201`:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "originalName": "photo.jpg",
+    "key": "images/f47ac10b-58cc-4372-a567-0e02b2c3d479.jpg",
+    "mimeType": "image/jpeg",
+    "size": 204800,
+    "category": "image",
+    "bucket": "storage-service",
+    "provider": "minio",
+    "uploadedAt": "2024-07-01T12:00:00.000Z",
+    "processing": {
+      "status": "completed",
+      "thumbnailKey": "images/f47ac10b-...-thumb.jpg",
+      "thumbnailUrl": "https://...",
+      "width": 1920,
+      "height": 1080
+    }
+  },
+  "meta": { "requestId": "...", "timestamp": "...", "version": "1.0.0" }
+}
+```
+
+---
+
+#### List Files
+
+```
+GET /api/v1/files?prefix=images/&maxKeys=50&continuationToken=<token>
+```
+
+**Response `200`:**
+
+```json
+{
+  "success": true,
+  "data": [ ... ],
+  "pagination": { "hasMore": false, "nextToken": null }
+}
+```
+
+---
+
+#### Download a File
+
+```
+GET /api/v1/files/:key
+```
+
+Returns the file as a binary stream with `Content-Disposition: attachment`.
+
+---
+
+#### Get Presigned URL
+
+```
+GET /api/v1/files/:key/url?expiresIn=3600
+```
+
+**Response `200`:**
+
+```json
+{
+  "success": true,
+  "data": { "url": "https://...", "expiresIn": 3600 }
+}
+```
+
+---
+
+#### Get File Metadata
+
+```
+GET /api/v1/files/:key/metadata
+```
+
+Returns storage metadata without downloading the file body.
+
+---
+
+#### Copy a File
+
+```
+POST /api/v1/files/:key/copy
+Content-Type: application/json
+
+{ "destinationKey": "archive/photo.jpg" }
+```
+
+---
+
+#### Delete a File
+
+```
+DELETE /api/v1/files/:key
+```
+
+---
+
+#### Batch Delete
+
+```
+DELETE /api/v1/files
+Content-Type: application/json
+
+{ "keys": ["images/a.jpg", "images/b.jpg"] }
+```
+
+---
+
+### Health & Observability
+
+| Endpoint | Description |
+|---|---|
+| `GET /health/live` | Liveness probe — always 200 while process runs |
+| `GET /health/ready` | Readiness probe — checks storage + processors |
+| `GET /metrics` | Prometheus metrics (text format) |
+
+---
+
+## Storage Providers
+
+### Amazon S3
+
+```env
+STORAGE_PROVIDER=s3
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=...
+AWS_S3_BUCKET=my-bucket
+```
+
+For LocalStack, also set `AWS_S3_ENDPOINT=http://localhost:4566`.
+
+### Google Cloud Storage
+
+```env
+STORAGE_PROVIDER=gcs
+GCS_PROJECT_ID=my-gcp-project
+GCS_BUCKET=my-bucket
+GCS_KEY_FILE=./config/gcs-key.json
+```
+
+### MinIO (default)
+
+```env
+STORAGE_PROVIDER=minio
+MINIO_ENDPOINT=localhost
+MINIO_PORT=9000
+MINIO_USE_SSL=false
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET=storage-service
+```
 
 ---
 
 ## Testing
 
 ```bash
-# Run all tests
-pytest
+# All tests
+npm test
 
-# Unit tests only (no external services required)
-pytest tests/unit/
+# Unit tests only (no I/O)
+npm run test:unit
 
-# Integration tests (requires running docker compose stack)
-pytest tests/integration/
+# Integration tests (providers mocked)
+npm run test:integration
 
-# With coverage report
-pytest --cov=src --cov-report=term-missing
+# Coverage report
+npm run test:coverage
 ```
 
 ---
 
 ## Docker
 
-### Build the image
+### Build image
 
 ```bash
-docker build -f docker/Dockerfile -t sericestore:latest .
+docker build -t storage-service:latest .
 ```
 
-### Run with S3
+### Run standalone
 
 ```bash
-docker run -p 8000:8000 \
-  -e STORAGE_BACKEND=s3 \
-  -e AWS_ACCESS_KEY_ID=your_key \
-  -e AWS_SECRET_ACCESS_KEY=your_secret \
-  -e AWS_S3_BUCKET=your-bucket \
-  -e AWS_REGION=us-east-1 \
-  sericestore:latest
-```
-
-### Run with GCS
-
-```bash
-docker run -p 8000:8000 \
-  -e STORAGE_BACKEND=gcs \
-  -e GCS_PROJECT_ID=my-project \
-  -e GCS_BUCKET=my-bucket \
-  -v /path/to/credentials.json:/app/credentials.json:ro \
-  -e GCS_CREDENTIALS_FILE=/app/credentials.json \
-  sericestore:latest
+docker run -p 3000:3000 \
+  -e STORAGE_PROVIDER=minio \
+  -e MINIO_ENDPOINT=host.docker.internal \
+  -e AUTH_ENABLED=false \
+  storage-service:latest
 ```
 
 ---
 
-## Project Structure
+## Security Notes
 
-```
-storage-service/
-├── src/
-│   ├── api/
-│   │   ├── middleware/
-│   │   │   ├── auth.py          # Bearer token auth (pluggable)
-│   │   │   └── logging.py       # Structured request/response logging
-│   │   ├── routes/
-│   │   │   ├── files.py         # File CRUD + presigned URL endpoints
-│   │   │   ├── health.py        # Health & metrics endpoints
-│   │   │   └── media.py         # Image & video processing endpoints
-│   │   └── schemas/
-│   │       ├── file.py          # File request/response Pydantic models
-│   │       └── media.py         # Media request/response Pydantic models
-│   ├── core/
-│   │   ├── config.py            # Settings (pydantic-settings)
-│   │   ├── exceptions.py        # Domain exceptions
-│   │   └── logging.py           # structlog setup
-│   ├── domain/
-│   │   ├── models/
-│   │   │   ├── file.py          # StoredFile dataclass
-│   │   │   └── media.py         # ImageMetadata, VideoMetadata, ProcessingJob
-│   │   └── repositories/
-│   │       └── storage_repository.py  # StorageRepository ABC
-│   ├── infrastructure/
-│   │   ├── storage/
-│   │   │   ├── __init__.py      # Backend factory (get_storage_backend)
-│   │   │   ├── base.py          # Shared utilities (sanitize_key, etc.)
-│   │   │   ├── s3_storage.py    # AWS S3 adapter (aioboto3)
-│   │   │   ├── gcs_storage.py   # GCS adapter (google-cloud-storage)
-│   │   │   └── minio_storage.py # MinIO adapter (miniopy-async)
-│   │   └── media/
-│   │       ├── __init__.py      # Processor factories
-│   │       ├── image_processor.py  # ImageMagick/Wand operations
-│   │       └── video_processor.py  # FFmpeg operations
-│   └── services/
-│       ├── file_service.py      # File upload/download/list/delete logic
-│       └── media_service.py     # Orchestrates media transformations
-├── tests/
-│   ├── conftest.py              # Shared fixtures (InMemoryStorage, etc.)
-│   ├── unit/
-│   │   ├── test_file_service.py
-│   │   └── test_storage_base.py
-│   └── integration/
-│       └── test_api_files.py
-├── docker/
-│   ├── Dockerfile               # Multi-stage build (builder + runtime)
-│   └── docker-compose.yml       # Full local stack (API + MinIO)
-├── main.py                      # FastAPI app factory & entry point
-├── requirements.txt
-├── requirements-dev.txt
-├── pytest.ini
-├── .env.example
-├── .gitignore
-└── README.md
-```
+- All secrets must be provided via environment variables — never hard-coded.
+- Object keys are sanitised to prevent path traversal.
+- MIME types are validated against a configurable allowlist before upload.
+- JWT authentication is enforced by default; disable only for local development.
+- The production Docker image runs as a non-root user (`appuser`).
+- Rate limiting is applied globally; tune `RATE_LIMIT_WINDOW_MS` and `RATE_LIMIT_MAX_REQUESTS` for your traffic profile.
+
+---
+
+## Extending the Service
+
+### Adding a new storage provider
+
+1. Create `src/services/storage/mycloud.provider.ts` implementing `IStorageProvider`.
+2. Register it in `src/services/storage/storage.factory.ts`.
+3. Add the corresponding config block to `src/config/index.ts` and `.env.example`.
+
+### Customising image processing
+
+Edit `ImageProcessingOptions` in `src/core/types/index.ts` and update `ImageProcessor.process()` in `src/services/processing/image.processor.ts`.
+
+---
+
+## License
+
+MIT
