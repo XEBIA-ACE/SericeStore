@@ -1,0 +1,412 @@
+openapi: 3.0.3
+info:
+  title: Storage Service API
+  description: |
+    Multi-cloud object storage service with support for Amazon S3, Google Cloud Storage,
+    and MinIO, plus image (ImageMagick/sharp) and video (FFmpeg) processing.
+  version: 1.0.0
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000/v1
+    description: Local development
+  - url: https://api.example.com/v1
+    description: Production
+
+tags:
+  - name: Objects
+    description: Object CRUD operations
+  - name: Health
+    description: Service health and metrics
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    StoredObject:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        originalName:
+          type: string
+        key:
+          type: string
+        bucket:
+          type: string
+        contentType:
+          type: string
+        size:
+          type: integer
+        provider:
+          type: string
+          enum: [s3, gcs, minio]
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        etag:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ObjectListItem:
+      type: object
+      properties:
+        key:
+          type: string
+        size:
+          type: integer
+        lastModified:
+          type: string
+          format: date-time
+        etag:
+          type: string
+
+    UploadResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            object:
+              $ref: '#/components/schemas/StoredObject'
+            presignedUrl:
+              type: string
+              format: uri
+            thumbnailPresignedUrl:
+              type: string
+              format: uri
+
+    PresignedUrlResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            key:
+              type: string
+            url:
+              type: string
+              format: uri
+
+    ListResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/ObjectListItem'
+            count:
+              type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: array
+              items:
+                type: object
+            requestId:
+              type: string
+
+    HealthStatus:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [healthy, degraded, unhealthy]
+            version:
+              type: string
+            uptime:
+              type: integer
+            timestamp:
+              type: string
+              format: date-time
+            checks:
+              type: object
+              additionalProperties:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [pass, fail]
+                  latencyMs:
+                    type: integer
+                  message:
+                    type: string
+
+paths:
+  /objects:
+    post:
+      tags: [Objects]
+      summary: Upload a file
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: processImage
+          schema:
+            type: boolean
+            default: false
+          description: Resize image and generate thumbnail on upload
+        - in: query
+          name: bucket
+          schema:
+            type: string
+          description: Override the default bucket
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: File uploaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResponse'
+        '400':
+          description: Bad request (no file or invalid query)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: File too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Unsupported media type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      tags: [Objects]
+      summary: List objects
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: prefix
+          schema:
+            type: string
+          description: Filter by key prefix
+        - in: query
+          name: maxKeys
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 1000
+        - in: query
+          name: bucket
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of objects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListResponse'
+
+  /objects/copy:
+    post:
+      tags: [Objects]
+      summary: Copy an object
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourceKey, destKey]
+              properties:
+                sourceKey:
+                  type: string
+                destKey:
+                  type: string
+                sourceBucket:
+                  type: string
+                destBucket:
+                  type: string
+      responses:
+        '201':
+          description: Object copied
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /objects/{key}/url:
+    get:
+      tags: [Objects]
+      summary: Generate a presigned download URL
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: key
+          required: true
+          schema:
+            type: string
+          description: URL-encoded object key
+        - in: query
+          name: expiresIn
+          schema:
+            type: integer
+            default: 3600
+            minimum: 60
+            maximum: 604800
+          description: URL TTL in seconds
+        - in: query
+          name: bucket
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Presigned URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PresignedUrlResponse'
+        '404':
+          description: Object not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /objects/{key}/download:
+    get:
+      tags: [Objects]
+      summary: Download an object's content directly
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: key
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: bucket
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File content
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Object not found
+
+  /objects/{key}:
+    delete:
+      tags: [Objects]
+      summary: Delete an object
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: key
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: bucket
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Object deleted
+        '404':
+          description: Object not found
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Readiness check (includes storage connectivity)
+      responses:
+        '200':
+          description: Service ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          description: Service unavailable
+
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Liveness check (no external I/O)
+      responses:
+        '200':
+          description: Service alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                      uptime:
+                        type: integer
+
+  /metrics:
+    get:
+      tags: [Health]
+      summary: Prometheus metrics
+      responses:
+        '200':
+          description: Prometheus exposition format
+          content:
+            text/plain:
+              schema:
+                type: string
